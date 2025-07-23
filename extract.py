@@ -16,8 +16,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Name of ERA5 data file
-ERA_FILE = '4e3fb9be07438fe7a43509464b9bc36b.grib'
+# Name of ERA5 data files
+ERA_FILE_17 = '1206867618e8dc26ff041292e751878d.grib'
+ERA_FILE_18 = 'e561358887fabdd8486e6014ab26be6a.grib'
 # To stop iris future warnings
 iris.FUTURE.date_microseconds = True
 
@@ -76,26 +77,46 @@ def get_era5_data():
                                       level.
     """
     # Load ERA5 data from GRIB file
-    cubes = iris.load(ERA_FILE)
+    cubes_17 = iris.load(ERA_FILE_17)
+    cubes_18 = iris.load(ERA_FILE_18)
 
-    # Extract data from cubes
-    temp_cube = cubes.extract(iris.Constraint(name='air_temperature'))[0]
-    hum_cube = cubes.extract(iris.Constraint(name='relative_humidity'))[0]
-    geo_cube = cubes.extract(iris.Constraint(name='geopotential'))[0]
+    # Create cube lists to add to
+    temp_cubes = iris.cube.CubeList()
+    hum_cubes = iris.cube.CubeList()
+    height_cubes = iris.cube.CubeList()
 
-    # Convert temperature to Celsius
-    temp_cube.convert_units('Celsius')
+    # Extract data and combine cubes
+    for cubes in [cubes_17, cubes_18]:
 
-    # Convert geopotential to height above sea level
-    height_cube = geo_cube / 9.80665
+        # Extract data from cubes
+        temp_cube = cubes.extract(iris.Constraint(name='air_temperature'))[0]
+        hum_cube = cubes.extract(iris.Constraint(name='relative_humidity'))[0]
+        geo_cube = cubes.extract(iris.Constraint(name='geopotential'))[0]
+
+        # Convert temperature to Celsius
+        temp_cube.convert_units('Celsius')
+
+        # Convert geopotential to height above sea level (in feet)
+        height_cube = geo_cube / 9.80665 * 3.28084
+        height_cube.units = 'feet'
+
+        # Add to cube lists
+        temp_cubes.append(temp_cube)
+        hum_cubes.append(hum_cube)
+        height_cubes.append(height_cube)
+
+    # Concatenate cubes into single cubes
+    m_temp_cube = iris.cube.CubeList(temp_cubes).concatenate_cube()
+    m_hum_cube = iris.cube.CubeList(hum_cubes).concatenate_cube()
+    m_height_cube = iris.cube.CubeList(height_cubes).concatenate_cube()
 
     # Ensure all cubes have the same time, pressure, latitude and
     # longitude coordinates
-    for other_cube in [hum_cube, geo_cube]:
+    for other_cube in [m_hum_cube, m_height_cube]:
         for coord in ['time', 'pressure', 'latitude', 'longitude']:
-            assert_coord_equal(temp_cube, other_cube, coord)
+            assert_coord_equal(m_temp_cube, other_cube, coord)
 
-    return temp_cube, hum_cube, height_cube
+    return m_temp_cube, m_hum_cube, m_height_cube
 
 
 def get_metars():
@@ -161,8 +182,12 @@ def make_df(temp_cube, hum_cube, height_cube):
         'Pressure (hPa)': pressure_grid.flatten(),
         'Temperature (Celsius)': temp_cube.data.flatten(),
         'Relative Humidity (%)': hum_cube.data.flatten(),
-        'Height Above Sea Level (m)': height_cube.data.flatten()
+        'Height Above Sea Level (ft)': height_cube.data.flatten()
     })
+
+    # Add in local time column (UTC + 2 hours)
+    era_df['Local Time (UTC+2)'] = (era_df['Data and Time (UTC)'] 
+                                    + pd.Timedelta(hours=2))
 
     # Save as csv file
     era_df.to_csv('era5_data.csv', index=False)
@@ -214,8 +239,11 @@ def make_map(cube):
     ax.add_feature(cfeature.LAKES, alpha=0.5)
     ax.add_feature(cfeature.RIVERS)
 
-    # Set extent (min lon, max lon, min lat, max lat)
-    ax.set_extent([2, 4.3, 46, 48])
+    # Add gridlines
+    ax.gridlines(draw_labels=True)
+
+    # Set extent (min lon, max lon, min lat, max lat) based on 
+    ax.set_extent([2.1107, 4.1107, 46.2489, 47.7489])
 
     # Save and close plot
     plt.savefig('era5_map.png', bbox_inches='tight')
